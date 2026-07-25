@@ -17,7 +17,7 @@ This test build adds a compact Windows notification-area indicator for up to thr
 
 ## Download and verification
 
-Download `zmk-battery-center_0.10.1_windows_x64_portable.exe` and run it directly. This is a portable test build; it does not include an installer.
+Download `zmk-battery-center_0.10.1_windows_x64_portable.exe` and run it directly. This is a portable test build; it does not include an installer or require license JSON sidecar files. The About window and its open-source license list are included in the executable.
 
 This executable is not Authenticode-signed. Windows may display a Microsoft Defender SmartScreen warning because the build has no trusted publisher certificate or established reputation. Verify the executable with `SHA256SUMS.txt` and the GitHub Sigstore-backed build provenance published for this workflow run.
 
