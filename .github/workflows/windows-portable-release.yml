@@ -1,0 +1,191 @@
+name: "Windows Portable Test Release"
+
+on:
+  push:
+    branches:
+      - "integration/windows-tray-indicator"
+    paths:
+      - ".github/workflows/windows-portable-release.yml"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: windows-portable-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref_name == 'integration/windows-tray-indicator'
+    runs-on: windows-latest
+    env:
+      RELEASE_TAG: v0.10.1-windows-tray.1
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Validate release tag and uniqueness
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $remoteTag = git ls-remote --tags origin "refs/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to check the remote tag '$env:RELEASE_TAG'."
+          }
+          if (-not [string]::IsNullOrWhiteSpace(($remoteTag | Out-String))) {
+            throw "Tag '$env:RELEASE_TAG' already exists. Existing tags are never overwritten."
+          }
+
+          $releaseLookup = gh api "repos/$env:GH_REPO/releases/tags/$env:RELEASE_TAG" 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            throw "Release '$env:RELEASE_TAG' already exists. Existing releases are never overwritten."
+          }
+          if (($releaseLookup | Out-String) -notmatch 'HTTP 404') {
+            throw "Unable to verify that release '$env:RELEASE_TAG' is absent: $releaseLookup"
+          }
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3.14"
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch, pinned 2026-07-10
+        with:
+          toolchain: stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install cargo-about
+        run: cargo install cargo-about --version 0.9.1 --locked --features cli
+
+      - name: Generate licenses for the portable executable
+        run: bun scripts/generate_licenses.ts --skip-verify
+
+      - name: Build portable Windows executable
+        run: bun run build:app
+
+      - name: Stage release assets and checksums
+        shell: pwsh
+        env:
+          PORTABLE_EXE: zmk-battery-center_0.10.1_windows_x64_portable.exe
+          SCREENSHOT: windows-tray-three-devices.png
+        run: |
+          $ErrorActionPreference = "Stop"
+          $staging = Join-Path $env:RUNNER_TEMP "windows-portable-release"
+          New-Item -ItemType Directory -Path $staging -Force | Out-Null
+
+          $builtExe = Join-Path $env:GITHUB_WORKSPACE "src-tauri/target/release/zmk-battery-center.exe"
+          $trackedScreenshot = Join-Path $env:GITHUB_WORKSPACE "docs/assets/windows-tray-three-devices.png"
+          if (-not (Test-Path -LiteralPath $builtExe -PathType Leaf)) {
+            throw "Portable executable was not produced at '$builtExe'."
+          }
+
+          $expectedScreenshotHash = "104780859BE230A11ABF8330AB1E024D5E7A09E750F6B779FBB40198E96EBBE0"
+          $actualScreenshotHash = (Get-FileHash -LiteralPath $trackedScreenshot -Algorithm SHA256).Hash
+          if ($actualScreenshotHash -cne $expectedScreenshotHash) {
+            throw "Tracked screenshot hash does not match the reviewed release image."
+          }
+
+          Copy-Item -LiteralPath $builtExe -Destination (Join-Path $staging $env:PORTABLE_EXE)
+          Copy-Item -LiteralPath $trackedScreenshot -Destination (Join-Path $staging $env:SCREENSHOT)
+
+          $checksumNames = @($env:PORTABLE_EXE, $env:SCREENSHOT)
+          $checksumLines = foreach ($name in $checksumNames) {
+            $hash = (Get-FileHash -LiteralPath (Join-Path $staging $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $name"
+          }
+          $checksumPath = Join-Path $staging "SHA256SUMS.txt"
+          [System.IO.File]::WriteAllLines(
+            $checksumPath,
+            $checksumLines,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Attest portable executable build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: '${{ runner.temp }}\windows-portable-release\zmk-battery-center_0.10.1_windows_x64_portable.exe'
+
+      - name: Render release notes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $templatePath = Join-Path $env:GITHUB_WORKSPACE ".github/release-notes/windows-tray.md"
+          $notesPath = Join-Path $env:RUNNER_TEMP "windows-portable-release-notes.md"
+          $notes = (Get-Content -LiteralPath $templatePath -Raw).
+            Replace("{{REPOSITORY}}", $env:GITHUB_REPOSITORY).
+            Replace("{{TAG}}", $env:RELEASE_TAG)
+          [System.IO.File]::WriteAllText(
+            $notesPath,
+            $notes,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Create release tag atomically
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          git tag $env:RELEASE_TAG $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to create local lightweight tag '$env:RELEASE_TAG'."
+          }
+
+          $tagTarget = git rev-list -n 1 $env:RELEASE_TAG
+          if ($LASTEXITCODE -ne 0 -or $tagTarget -cne $env:GITHUB_SHA) {
+            throw "Local tag '$env:RELEASE_TAG' does not resolve to the workflow commit."
+          }
+
+          git push origin "refs/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Atomic tag publication failed. The existing remote tag, if any, was not overwritten."
+          }
+
+      - name: Create draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $notesPath = Join-Path $env:RUNNER_TEMP "windows-portable-release-notes.md"
+          gh release create $env:RELEASE_TAG `
+            --repo $env:GH_REPO `
+            --verify-tag `
+            --title "ZMK Battery Center Windows tray preview $env:RELEASE_TAG" `
+            --notes-file $notesPath `
+            --draft `
+            --prerelease
+
+      - name: Upload release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $staging = Join-Path $env:RUNNER_TEMP "windows-portable-release"
+          gh release upload $env:RELEASE_TAG `
+            (Join-Path $staging "zmk-battery-center_0.10.1_windows_x64_portable.exe") `
+            (Join-Path $staging "SHA256SUMS.txt") `
+            (Join-Path $staging "windows-tray-three-devices.png") `
+            --repo $env:GH_REPO
+
+      - name: Publish prerelease
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release edit $env:RELEASE_TAG `
+            --repo $env:GH_REPO `
+            --draft=false `
+            --prerelease

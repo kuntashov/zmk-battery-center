@@ -119,3 +119,27 @@
 **Consequence:** Before release, manually verify one, two, and three batteries; 19/20/50/51 color boundaries; disconnected and unknown states; 100%, 125%, 150%, and 200% scaling; light and dark taskbars; and restoration of the application icon when no devices are configured.
 
 **Verification:** The manual checklist above is required after the complete Windows tray path is built.
+
+## Publish an unsigned portable Windows test build
+
+**Context:** The fork needs a one-off Windows executable for testers, but it has no trusted Authenticode certificate, hardware-backed key, or external code-signing service configured as a GitHub Actions secret.
+
+**Risk:** Self-signing would still trigger Windows trust warnings, would not establish a trusted publisher identity, and could mislead testers into treating an untrusted certificate as meaningful authentication. Storing an exportable signing key without an established certificate-management process would also create unnecessary secret-management risk.
+
+**Decision:** Do not Authenticode-sign this test executable and reject self-signing. Publish its SHA-256 checksum and GitHub Sigstore-backed build provenance so testers can verify artifact integrity and its relationship to the repository workflow. Describe the executable explicitly as an unsigned test build and warn that Microsoft Defender SmartScreen may appear.
+
+**Consequence:** Windows does not display a trusted publisher for this preview executable. Authenticode signing can be added later only after a trusted PFX and protected signing secrets are available, or after the project adopts a trusted external code-signing service.
+
+**Verification:** The release workflow attests the staged portable executable, generates `SHA256SUMS.txt` for the executable and screenshot, and publishes both verification mechanisms with the prerelease.
+
+## Embed license data in the portable executable
+
+**Context:** Bundled installers copy generated license JSON files as application resources, but a `tauri build --no-bundle` release distributes only one executable. The About window still needs the same dependency and manual attribution data.
+
+**Risk:** Requiring undocumented JSON sidecars would make the advertised single-file build incomplete. Always requiring generated JSON at compile time would instead break normal development and test builds where those ignored files are absent.
+
+**Decision:** The build script enables an `embedded_licenses` configuration only when generated JavaScript, generated Cargo, and tracked manual license JSON files all exist. Under that configuration, the executable includes their contents at compile time. Runtime loading continues to prefer external resource or development files and uses the embedded data only when external files are unavailable.
+
+**Consequence:** The release workflow generates licenses before compiling, so its portable EXE has a self-contained About license list. Ordinary builds without generated license files still compile and return the existing descriptive missing-data error when neither external nor embedded data is available.
+
+**Verification:** Rust tests cover generated parsing, manual entry merging, generated parse errors, optional malformed manual data, and both compile-time configuration paths. Release validation must also confirm the known manual license marker is present in the built EXE. Opening About from a directory without adjacent license JSON files remains a manual check because automating the native tray menu and webview for this one-off release would cost more than twice the fallback implementation.
