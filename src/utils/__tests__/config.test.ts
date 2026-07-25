@@ -263,6 +263,22 @@ describe("config utils", () => {
 		expect(loaded.trayColorHighThreshold).toBe(defaultConfig.trayColorHighThreshold);
 	});
 
+	it.each([
+		{ low: 99, high: 99 },
+		{ low: 100, high: 100 },
+	])("loadSavedConfig checks tray color ordering after clamping $low/$high", async ({ low, high }) => {
+		mockStore.get.mockResolvedValue({
+			trayColorLowThreshold: low,
+			trayColorHighThreshold: high,
+		});
+
+		const { defaultConfig, loadSavedConfig } = await import("../config");
+		const loaded = await loadSavedConfig();
+
+		expect(loaded.trayColorLowThreshold).toBe(defaultConfig.trayColorLowThreshold);
+		expect(loaded.trayColorHighThreshold).toBe(defaultConfig.trayColorHighThreshold);
+	});
+
 	it("loadSavedConfig falls back to both tray color defaults when either value is damaged", async () => {
 		mockStore.get.mockResolvedValue({
 			trayColorLowThreshold: Number.NaN,

@@ -122,6 +122,22 @@ function normalizeBatteryThresholds(
 	return { low: candidateLow, high: candidateHigh };
 }
 
+function normalizeTrayColorThresholds(low: number, high: number) {
+	const fallback = {
+		low: defaultConfig.trayColorLowThreshold,
+		high: defaultConfig.trayColorHighThreshold,
+	};
+	if (!Number.isFinite(low) || !Number.isFinite(high)) {
+		return fallback;
+	}
+	const candidateLow = clampBatteryThreshold(low, fallback.low);
+	const candidateHigh = clampBatteryThreshold(high, fallback.high);
+	if (candidateLow >= candidateHigh) {
+		return fallback;
+	}
+	return { low: candidateLow, high: candidateHigh };
+}
+
 export async function loadSavedConfig(): Promise<Config> {
 	const config = await getConfigStore().then((store: Store) => store.get<Partial<Config>>('config'));
 	logger.info(`Loaded config: ${JSON.stringify(config, null, 4)}`);
@@ -143,24 +159,16 @@ export async function loadSavedConfig(): Promise<Config> {
 		defaultConfig.lowBatteryThreshold,
 		defaultConfig.highBatteryThreshold,
 	);
-	const trayColorThresholds = normalizeBatteryThresholds(
+	const trayColorThresholds = normalizeTrayColorThresholds(
 		merged.trayColorLowThreshold,
 		merged.trayColorHighThreshold,
-		defaultConfig.trayColorLowThreshold,
-		defaultConfig.trayColorHighThreshold,
 	);
-	const hasValidTrayColorThresholdTypes = Number.isFinite(merged.trayColorLowThreshold)
-		&& Number.isFinite(merged.trayColorHighThreshold);
 	return {
 		...merged,
 		lowBatteryThreshold: notificationThresholds.low,
 		highBatteryThreshold: notificationThresholds.high,
-		trayColorLowThreshold: hasValidTrayColorThresholdTypes
-			? trayColorThresholds.low
-			: defaultConfig.trayColorLowThreshold,
-		trayColorHighThreshold: hasValidTrayColorThresholdTypes
-			? trayColorThresholds.high
-			: defaultConfig.trayColorHighThreshold,
+		trayColorLowThreshold: trayColorThresholds.low,
+		trayColorHighThreshold: trayColorThresholds.high,
 	};
 };
 
