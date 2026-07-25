@@ -1,5 +1,8 @@
 use serde::Deserialize;
 
+pub(crate) const DEFAULT_COLOR_LOW_THRESHOLD: u8 = 20;
+pub(crate) const DEFAULT_COLOR_HIGH_THRESHOLD: u8 = 50;
+
 fn default_row_count() -> u8 {
     2
 }
@@ -13,11 +16,11 @@ fn default_components() -> Vec<TrayIconComponent> {
 }
 
 fn default_color_low_threshold() -> u8 {
-    20
+    DEFAULT_COLOR_LOW_THRESHOLD
 }
 
 fn default_color_high_threshold() -> u8 {
-    50
+    DEFAULT_COLOR_HIGH_THRESHOLD
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]

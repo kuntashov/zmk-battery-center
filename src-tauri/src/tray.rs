@@ -1,11 +1,15 @@
 use crate::tray_battery_payload::TrayBatteryPayload;
-use std::sync::{atomic::{AtomicBool, Ordering}, Mutex};
-use tauri::{
-    tray::{MouseButton, MouseButtonState, TrayIconEvent},
-    AppHandle, Emitter, Manager,
-};
 #[cfg(target_os = "linux")]
 use ksni::TrayMethods;
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_os = "linux")]
+use std::sync::Mutex;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use tauri::Manager;
+use tauri::{
+    tray::{MouseButton, MouseButtonState, TrayIconEvent},
+    AppHandle, Emitter,
+};
 
 pub struct TrayState {
     pub manual_positioning: AtomicBool,
@@ -98,10 +102,7 @@ impl ksni::Tray for LinuxTray {
 }
 
 #[tauri::command]
-pub fn update_tray_battery_icon(
-    app: AppHandle,
-    payload: TrayBatteryPayload,
-) -> Result<(), String> {
+pub fn update_tray_battery_icon(app: AppHandle, payload: TrayBatteryPayload) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let tray = app
@@ -109,7 +110,11 @@ pub fn update_tray_battery_icon(
             .ok_or_else(|| "tray icon not found".to_string())?;
         crate::tray_native_macos::apply_tray_battery_state(&app, &tray, &payload)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        crate::tray_native_windows::apply_tray_battery_state(&app, &payload)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (app, payload);
         Ok(())
