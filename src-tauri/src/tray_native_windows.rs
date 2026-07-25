@@ -393,8 +393,13 @@ mod tests {
             (255, geometry.inner.width),
         ] {
             let battery_slot = slot(Some(percent), false);
-            let image =
-                rasterize_battery_slots(&[battery_slot.clone()], 32, 20, 50, FALLBACK_OUTLINE);
+            let image = rasterize_battery_slots(
+                std::slice::from_ref(&battery_slot),
+                32,
+                20,
+                50,
+                FALLBACK_OUTLINE,
+            );
             assert_eq!(
                 colored_width(&image, geometry.inner, fill_color(&battery_slot, 20, 50)),
                 expected_width

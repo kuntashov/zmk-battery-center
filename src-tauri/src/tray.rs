@@ -1,15 +1,15 @@
 use crate::tray_battery_payload::TrayBatteryPayload;
+#[cfg(target_os = "linux")]
+use ksni::TrayMethods;
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_os = "linux")]
 use std::sync::Mutex;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use tauri::Manager;
 use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconEvent},
     AppHandle, Emitter,
 };
-#[cfg(target_os = "linux")]
-use ksni::TrayMethods;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use tauri::Manager;
 
 pub struct TrayState {
     pub manual_positioning: AtomicBool,
@@ -102,10 +102,7 @@ impl ksni::Tray for LinuxTray {
 }
 
 #[tauri::command]
-pub fn update_tray_battery_icon(
-    app: AppHandle,
-    payload: TrayBatteryPayload,
-) -> Result<(), String> {
+pub fn update_tray_battery_icon(app: AppHandle, payload: TrayBatteryPayload) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let tray = app
