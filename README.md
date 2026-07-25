@@ -14,7 +14,10 @@ A system tray app to monitor the battery level of ZMK-based keyboards, built wit
   - Multiple keyboards simultaneously
 - Record battery level history and display in a graph
 - Multi-platform: Windows, macOS, Linux (limited, see [here](#limitations-on-linux) for details)
-[macOS only] Display battery level on the system tray (inspired by [ZMK Battery Bar](https://github.com/itouuuuuuuuu/zmk-battery-bar))
+- Display battery status on the system tray:
+  - macOS: configurable role labels, battery icons, percentages, and the application icon (inspired by [ZMK Battery Bar](https://github.com/itouuuuuuuuu/zmk-battery-bar))
+  - Windows: up to three ordered battery progress indicators with configurable red, yellow, and green thresholds
+  - Linux: battery-level tray indicators are not currently available
 - (Options)
   - Push notifications when
     - Keyboard battery level reaches / drops below a certain threshold
