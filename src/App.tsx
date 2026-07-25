@@ -113,15 +113,27 @@ function App() {
 	useEffect(() => {
 		if (registeredDevices === undefined) return;
 		if (!isConfigLoaded) return;
-		if (platform() !== "macos") return;
+		const currentPlatform = platform();
+		if (currentPlatform !== "macos" && currentPlatform !== "windows") return;
 		const id = window.setTimeout(() => {
 			fireAndForget(
-				syncTrayBatteryIcon(registeredDevices, config.trayIconComponents),
+				syncTrayBatteryIcon(
+					registeredDevices,
+					config.trayIconComponents,
+					config.trayColorLowThreshold,
+					config.trayColorHighThreshold,
+				),
 				"Failed to sync tray battery icon",
 			);
 		}, 60);
 		return () => clearTimeout(id);
-	}, [registeredDevices, config.trayIconComponents, isConfigLoaded]);
+	}, [
+		registeredDevices,
+		config.trayIconComponents,
+		config.trayColorLowThreshold,
+		config.trayColorHighThreshold,
+		isConfigLoaded,
+	]);
 
 	async function fetchDevices() {
 		setState(State.fetchingDevices);

@@ -4,8 +4,16 @@ import type { BatteryInfo } from "@/utils/ble";
 import { batteryPartLabelStorageKey } from "@/utils/batteryLabels";
 import { defaultConfig, type TrayIconComponent } from "@/utils/config";
 
+export type TrayBatterySlot = {
+	percent: number | null;
+	disconnected: boolean;
+};
+
 export type TrayBatteryIconPayload = {
 	enabled: boolean;
+	slots: TrayBatterySlot[];
+	colorLowThreshold: number;
+	colorHighThreshold: number;
 	components: TrayIconComponent[];
 	rowCount: 1 | 2;
 	centralPercent: number | null;
@@ -14,6 +22,34 @@ export type TrayBatteryIconPayload = {
 	peripheralLabel: string | null;
 	disconnected: boolean;
 };
+
+const MAX_TRAY_BATTERY_SLOTS = 3;
+
+export function trayBatterySlotsFromDevices(devices: RegisteredDevice[]): TrayBatterySlot[] {
+	const slots: TrayBatterySlot[] = [];
+	for (const device of devices) {
+		if (device.batteryInfos.length === 0) {
+			slots.push({
+				percent: null,
+				disconnected: device.isDisconnected,
+			});
+		} else {
+			for (const info of device.batteryInfos) {
+				slots.push({
+					percent: info.battery_level ?? null,
+					disconnected: device.isDisconnected,
+				});
+				if (slots.length === MAX_TRAY_BATTERY_SLOTS) {
+					return slots;
+				}
+			}
+		}
+		if (slots.length === MAX_TRAY_BATTERY_SLOTS) {
+			return slots;
+		}
+	}
+	return slots;
+}
 
 function labelForInfo(info: BatteryInfo | undefined, fallback: "Central" | "Peripheral"): string {
 	if (!info?.user_description) {
@@ -40,10 +76,20 @@ function trayGlyphFromCustomOrInfo(
 	return labelForInfo(info, fallback);
 }
 
-export function trayBatteryPayloadFromPrimaryDevice(devices: RegisteredDevice[]): TrayBatteryIconPayload {
+export function trayBatteryPayloadFromPrimaryDevice(
+	devices: RegisteredDevice[],
+	colorLowThreshold: number = defaultConfig.trayColorLowThreshold,
+	colorHighThreshold: number = defaultConfig.trayColorHighThreshold,
+): TrayBatteryIconPayload {
+	const windowsFields = {
+		slots: trayBatterySlotsFromDevices(devices),
+		colorLowThreshold,
+		colorHighThreshold,
+	};
 	if (devices.length === 0) {
 		return {
 			enabled: false,
+			...windowsFields,
 			components: defaultConfig.trayIconComponents,
 			rowCount: 1,
 			centralPercent: null,
@@ -58,6 +104,7 @@ export function trayBatteryPayloadFromPrimaryDevice(devices: RegisteredDevice[])
 	if (infos.length === 0) {
 		return {
 			enabled: true,
+			...windowsFields,
 			components: defaultConfig.trayIconComponents,
 			rowCount: 1,
 			centralPercent: null,
@@ -72,6 +119,7 @@ export function trayBatteryPayloadFromPrimaryDevice(devices: RegisteredDevice[])
 		const custom = d.batteryPartLabels?.[batteryPartLabelStorageKey(b.user_description)];
 		return {
 			enabled: true,
+			...windowsFields,
 			components: defaultConfig.trayIconComponents,
 			rowCount: 1,
 			centralPercent: b.battery_level ?? null,
@@ -85,6 +133,7 @@ export function trayBatteryPayloadFromPrimaryDevice(devices: RegisteredDevice[])
 	const second = infos[1];
 	return {
 		enabled: true,
+		...windowsFields,
 		components: defaultConfig.trayIconComponents,
 		rowCount: 2,
 		centralPercent: first.battery_level ?? null,
@@ -106,8 +155,14 @@ export function trayBatteryPayloadFromPrimaryDevice(devices: RegisteredDevice[])
 export async function syncTrayBatteryIcon(
 	devices: RegisteredDevice[],
 	components: TrayIconComponent[] = defaultConfig.trayIconComponents,
+	colorLowThreshold: number = defaultConfig.trayColorLowThreshold,
+	colorHighThreshold: number = defaultConfig.trayColorHighThreshold,
 ): Promise<void> {
-	const payload = trayBatteryPayloadFromPrimaryDevice(devices);
+	const payload = trayBatteryPayloadFromPrimaryDevice(
+		devices,
+		colorLowThreshold,
+		colorHighThreshold,
+	);
 	payload.components = components.length > 0 ? components : [defaultConfig.trayIconComponents[0]];
 	await invoke("update_tray_battery_icon", { payload });
 }
