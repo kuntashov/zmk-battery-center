@@ -71,3 +71,51 @@
 **Consequence:** macOS continues reading the unchanged legacy fields, and old payloads remain deserializable while Windows can use the new data.
 
 **Verification:** TypeScript tests cover invocation values; Rust tests cover the full new shape, legacy defaults, and numeric deserialization bounds.
+
+## Render the Windows icon without a graphics dependency
+
+**Context:** The tray icon is a small set of axis-aligned battery shapes at known pixel sizes.
+
+**Risk:** A general-purpose graphics dependency would increase binary size and maintenance surface for a renderer that only needs rectangles and RGBA pixels.
+
+**Decision:** Build the transparent RGBA buffer directly with bounded rectangle helpers, then pass it to Tauri as an owned image. Do not write temporary PNG or ICO files.
+
+**Consequence:** Rendering stays deterministic, lightweight, and independently unit-testable.
+
+**Verification:** Rust tests cover buffer dimensions, alpha, row order, progress widths, status colors, and the three-slot limit at 16, 20, 24, and 32 px.
+
+## Derive the icon size from the tray rectangle
+
+**Context:** Windows tray icon pixels vary with taskbar DPI and Tauri exposes the current tray rectangle.
+
+**Risk:** Always rendering 32 px can produce poor scaling, while a missing or transient zero rectangle can create an invalid image.
+
+**Decision:** Use the smaller physical tray rectangle dimension, clamped to 16–32 px, and fall back to 32 px when the rectangle is missing, invalid, or cannot be read. Tauri currently returns a physical `Size`; a defensive logical-size branch treats rounded logical dimensions as a pixel hint because the tray API exposes no scale factor alongside that variant.
+
+**Consequence:** The icon follows common 16/20/24/32 px Windows taskbar sizes without introducing a separate DPI API.
+
+**Verification:** Pure helper tests cover minimum, maximum, rectangular, zero, and missing dimensions.
+
+## Use the Windows foreground color for outlines
+
+**Context:** A fixed dark or light battery outline disappears on one of the Windows taskbar themes.
+
+**Risk:** An unreadable outline makes empty and partially filled batteries ambiguous.
+
+**Decision:** Read `UIColorType::Foreground` through the existing `UISettings` dependency and pass it into the pure renderer. Use slate gray `#64748B` if Windows does not provide the color; disconnected and unknown states remain the specified `#94A3B8`.
+
+**Consequence:** Connected battery outlines track light and dark system themes while the rasterizer remains platform-independent.
+
+**Verification:** Unit tests inject the neutral outline and validate rendering independently of Windows runtime state.
+
+## Defer native tray visual automation
+
+**Context:** Pixel-perfect verification inside the real Windows notification area requires taskbar automation across themes and multiple DPI configurations.
+
+**Risk:** Building and maintaining that automation is estimated to cost more than twice the renderer itself and would still be sensitive to Windows shell variations.
+
+**Decision:** Keep raster behavior automated and defer native tray appearance to manual end-to-end verification.
+
+**Consequence:** Before release, manually verify one, two, and three batteries; 19/20/50/51 color boundaries; disconnected and unknown states; 100%, 125%, 150%, and 200% scaling; light and dark taskbars; and restoration of the application icon when no devices are configured.
+
+**Verification:** The manual checklist above is required after the complete Windows tray path is built.

@@ -11,6 +11,7 @@ mod tray;
 mod tray_battery_payload;
 #[cfg(target_os = "macos")]
 mod tray_native_macos;
+mod tray_native_windows;
 mod window;
 
 #[cfg(debug_assertions)] // for development
