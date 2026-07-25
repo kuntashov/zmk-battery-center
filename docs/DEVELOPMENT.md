@@ -108,6 +108,23 @@ Useful environment variables:
 
 You can also build using [GitHub Actions](../.github/workflows).
 
+### Windows tray indicator validation
+
+Slot mapping and RGBA rasterization are covered by deterministic TypeScript and Rust unit tests. The real Windows notification-area visual path is not automated: building and maintaining taskbar automation across themes, DPI settings, and BLE hardware is estimated to cost more than twice the feature implementation.
+
+The native multi-device visual pass for this implementation is **Not Executed** without representative BLE hardware. Before release, perform this checklist manually on Windows:
+
+1. With no devices registered, launch the built app and confirm the application icon appears in the notification area.
+2. Register one, two, and three battery channels and confirm horizontal battery indicators appear in UI order from top to bottom.
+3. Reorder top-level devices and confirm tray order changes accordingly; add and remove devices and confirm the slot count updates.
+4. Verify progress at 0%, a small nonzero value, 50%, and 100%.
+5. With default thresholds, verify 19% is red, 20% and 50% are yellow, and 51% is green; repeat around custom low/high settings.
+6. Disconnect a device with a known last level and confirm its retained progress becomes gray; verify a null or unavailable level is an empty gray battery.
+7. Confirm tray updates follow the configured polling interval and also update in `Auto (experimental)` notification mode without extra reads.
+8. Repeat with light and dark taskbars at 100%, 125%, 150%, and 200% display scaling.
+9. Remove all devices and confirm the application icon is restored.
+10. Exit the app and confirm the process and tray icon are cleaned up.
+
 ## Test Design
 
 This section describes a practical test design for this project. It is intentionally split into fast unit tests (run on every PR) and slower desktop E2E tests (run as smoke tests on PR + fuller coverage on schedule).
@@ -139,6 +156,10 @@ Primary unit targets:
 - `src/utils/batteryHistory.ts`
   - `appendBatteryHistory` sends expected payload to Tauri `invoke`.
   - `readBatteryHistory` returns typed records and passes IDs correctly.
+- `src/utils/trayBatteryIcon.ts`
+  - device and battery-channel order is flattened into at most three Windows tray slots.
+  - pending, disconnected, and unknown battery states produce the expected payload.
+  - configured tray color thresholds are forwarded to the Tauri command.
 - `src/context/ConfigContext.tsx`
   - initial load updates context + emits `config-changed`.
   - `update-config` listener merges partial updates and avoids event loop.
@@ -166,6 +187,10 @@ Primary unit targets:
 - `src-tauri/src/storage.rs`
   - `get_dev_store_path` honors `ZMK_BATTERY_CENTER_DATA_DIR` (absolute and relative).
   - fallback to `.dev-data` in debug builds.
+- `src-tauri/src/tray_native_windows.rs`
+  - color classification covers default and custom threshold boundaries.
+  - the pure rasterizer covers progress fill, status colors, slot order, transparency, and 16/20/24/32 px output.
+  - malformed thresholds and more than three slots are handled defensively.
 
 Recommended Rust refactor for easier testing:
 - Extract pure helpers from Tauri command functions (path resolution, CSV parse/format), then test helpers directly without requiring a full `AppHandle`.
