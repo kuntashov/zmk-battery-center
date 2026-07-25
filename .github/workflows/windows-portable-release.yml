@@ -40,12 +40,19 @@ jobs:
             throw "Tag '$env:RELEASE_TAG' already exists. Existing tags are never overwritten."
           }
 
-          $releaseLookup = gh api "repos/$env:GH_REPO/releases/tags/$env:RELEASE_TAG" 2>&1
-          if ($LASTEXITCODE -eq 0) {
-            throw "Release '$env:RELEASE_TAG' already exists. Existing releases are never overwritten."
+          $releaseJson = gh api "repos/$env:GH_REPO/releases?per_page=100"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to list existing releases."
           }
-          if (($releaseLookup | Out-String) -notmatch 'HTTP 404') {
-            throw "Unable to verify that release '$env:RELEASE_TAG' is absent: $releaseLookup"
+
+          try {
+            $releases = @($releaseJson | ConvertFrom-Json -ErrorAction Stop)
+          } catch {
+            throw "Unable to parse the existing release list: $($_.Exception.Message)"
+          }
+
+          if ($releases | Where-Object { $_.tag_name -ceq $env:RELEASE_TAG }) {
+            throw "Release '$env:RELEASE_TAG' already exists. Existing releases are never overwritten."
           }
 
       - name: Setup Bun
