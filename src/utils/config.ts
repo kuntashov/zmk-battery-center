@@ -33,6 +33,8 @@ export type Config = {
 	pushNotificationWhen: Record<NotificationType, boolean>;
 	lowBatteryThreshold: number;
 	highBatteryThreshold: number;
+	trayColorLowThreshold: number;
+	trayColorHighThreshold: number;
 	manualWindowPositioning: boolean;
 	windowPosition: {
 		x: number;
@@ -58,6 +60,8 @@ export const defaultConfig: Config = {
 	},
 	lowBatteryThreshold: 20,
 	highBatteryThreshold: 80,
+	trayColorLowThreshold: 20,
+	trayColorHighThreshold: 50,
 	manualWindowPositioning: false,
 	windowPosition: {
 		x: 0,
@@ -102,6 +106,22 @@ export function clampBatteryThreshold(
 	return rounded;
 }
 
+function normalizeBatteryThresholds(
+	low: number,
+	high: number,
+	defaultLow: number,
+	defaultHigh: number,
+) {
+	const candidateLow = clampBatteryThreshold(low, defaultLow, {
+		max: MAX_BATTERY_THRESHOLD - 1,
+	});
+	const candidateHigh = clampBatteryThreshold(high, defaultHigh);
+	if (candidateLow >= candidateHigh) {
+		return { low: defaultLow, high: defaultHigh };
+	}
+	return { low: candidateLow, high: candidateHigh };
+}
+
 export async function loadSavedConfig(): Promise<Config> {
 	const config = await getConfigStore().then((store: Store) => store.get<Partial<Config>>('config'));
 	logger.info(`Loaded config: ${JSON.stringify(config, null, 4)}`);
@@ -117,19 +137,31 @@ export async function loadSavedConfig(): Promise<Config> {
 			...(config?.windowPosition ?? {}),
 		},
 	};
-	const candidateLow = clampBatteryThreshold(
+	const notificationThresholds = normalizeBatteryThresholds(
 		merged.lowBatteryThreshold,
-		defaultConfig.lowBatteryThreshold,
-		{ max: MAX_BATTERY_THRESHOLD - 1 },
-	);
-	const candidateHigh = clampBatteryThreshold(
 		merged.highBatteryThreshold,
+		defaultConfig.lowBatteryThreshold,
 		defaultConfig.highBatteryThreshold,
 	);
-	const hasValidOrdering = candidateLow < candidateHigh;
-	const lowBatteryThreshold = hasValidOrdering ? candidateLow : defaultConfig.lowBatteryThreshold;
-	const highBatteryThreshold = hasValidOrdering ? candidateHigh : defaultConfig.highBatteryThreshold;
-	return { ...merged, lowBatteryThreshold, highBatteryThreshold };
+	const trayColorThresholds = normalizeBatteryThresholds(
+		merged.trayColorLowThreshold,
+		merged.trayColorHighThreshold,
+		defaultConfig.trayColorLowThreshold,
+		defaultConfig.trayColorHighThreshold,
+	);
+	const hasValidTrayColorThresholdTypes = Number.isFinite(merged.trayColorLowThreshold)
+		&& Number.isFinite(merged.trayColorHighThreshold);
+	return {
+		...merged,
+		lowBatteryThreshold: notificationThresholds.low,
+		highBatteryThreshold: notificationThresholds.high,
+		trayColorLowThreshold: hasValidTrayColorThresholdTypes
+			? trayColorThresholds.low
+			: defaultConfig.trayColorLowThreshold,
+		trayColorHighThreshold: hasValidTrayColorThresholdTypes
+			? trayColorThresholds.high
+			: defaultConfig.trayColorHighThreshold,
+	};
 };
 
 export async function setConfig(config: Config) {
