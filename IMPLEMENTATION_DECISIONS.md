@@ -35,3 +35,39 @@
 **Consequence:** Linux remains outside this feature's scope and requires a separate implementation if support is requested later.
 
 **Verification:** Platform-gated UI tests cover Windows and macOS; Windows tray rendering will be verified by focused unit tests and manual Windows end-to-end checks.
+
+## Flatten battery channels in display order
+
+**Context:** A registered device may expose one or more battery channels, and users already control the top-level device order in the application UI.
+
+**Risk:** Sorting or grouping channels independently for the tray could make a battery indicator refer to a different device than the corresponding UI row.
+
+**Decision:** Derive tray slots by traversing registered devices in their saved UI order and each device's `batteryInfos` in its existing order.
+
+**Consequence:** A split keyboard followed by a trackball produces Central, Peripheral, then trackball slots without a separate tray ordering setting.
+
+**Verification:** Unit tests cover split-plus-trackball ordering and top-level device reordering.
+
+## Limit the tray to three stable slots
+
+**Context:** The Windows tray design supports at most three battery indicators, while a registered device may temporarily have no battery information.
+
+**Risk:** Omitting a device before its first reading would shift later slot identities, while rendering every channel would exceed the legible tray layout.
+
+**Decision:** Keep only the first three flattened slots. Represent a top-level device with empty `batteryInfos` as one unknown slot with `percent: null` and that device's disconnected state.
+
+**Consequence:** Slot positions remain stable while data is pending, and channels beyond the first three are intentionally not represented.
+
+**Verification:** Unit tests cover truncation, unknown placeholders, disconnected/null states, and an empty device list.
+
+## Extend the tray payload additively
+
+**Context:** The macOS native tray renderer consumes the existing first-device fields, while the Windows renderer needs ordered slots and color thresholds.
+
+**Risk:** Replacing the payload shape would couple the Windows work to a macOS renderer rewrite and could break older payload producers.
+
+**Decision:** Add `slots`, `colorLowThreshold`, and `colorHighThreshold` alongside all legacy fields. Rust deserialization defaults omitted additions to an empty list and thresholds 20/50.
+
+**Consequence:** macOS continues reading the unchanged legacy fields, and old payloads remain deserializable while Windows can use the new data.
+
+**Verification:** TypeScript tests cover invocation values; Rust tests cover the full new shape, legacy defaults, and numeric deserialization bounds.

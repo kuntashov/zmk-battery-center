@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { syncTrayBatteryIcon, trayBatteryPayloadFromPrimaryDevice } from "../trayBatteryIcon";
+import {
+	syncTrayBatteryIcon,
+	trayBatteryPayloadFromPrimaryDevice,
+	trayBatterySlotsFromDevices,
+} from "../trayBatteryIcon";
 import { defaultConfig, TrayIconComponent } from "@/utils/config";
 import type { RegisteredDevice } from "@/utils/appHelpers";
 import type { BatteryInfo } from "@/utils/ble";
@@ -22,10 +26,103 @@ function info(battery_level: number | null, user_description: string | null): Ba
 	return { battery_level, user_description };
 }
 
+describe("trayBatterySlotsFromDevices", () => {
+	it("flattens a split keyboard and trackball in device and battery info order", () => {
+		const slots = trayBatterySlotsFromDevices([
+			device({
+				id: "split",
+				batteryInfos: [info(90, "Central"), info(72, "Peripheral")],
+			}),
+			device({
+				id: "trackball",
+				batteryInfos: [info(55, "Central")],
+			}),
+		]);
+
+		expect(slots).toEqual([
+			{ percent: 90, disconnected: false },
+			{ percent: 72, disconnected: false },
+			{ percent: 55, disconnected: false },
+		]);
+	});
+
+	it("follows top-level device reordering", () => {
+		const split = device({
+			id: "split",
+			batteryInfos: [info(90, "Central"), info(72, "Peripheral")],
+		});
+		const trackball = device({
+			id: "trackball",
+			batteryInfos: [info(55, "Central")],
+		});
+
+		expect(trayBatterySlotsFromDevices([trackball, split])).toEqual([
+			{ percent: 55, disconnected: false },
+			{ percent: 90, disconnected: false },
+			{ percent: 72, disconnected: false },
+		]);
+	});
+
+	it("keeps only the first three flattened battery channels", () => {
+		const slots = trayBatterySlotsFromDevices([
+			device({
+				id: "split",
+				batteryInfos: [info(90, "Central"), info(72, "Peripheral")],
+			}),
+			device({
+				id: "accessories",
+				batteryInfos: [info(55, "Trackball"), info(40, "Touchpad")],
+			}),
+		]);
+
+		expect(slots).toEqual([
+			{ percent: 90, disconnected: false },
+			{ percent: 72, disconnected: false },
+			{ percent: 55, disconnected: false },
+		]);
+	});
+
+	it("uses an unknown placeholder for a device with no battery infos", () => {
+		const slots = trayBatterySlotsFromDevices([
+			device({ id: "pending", isDisconnected: true }),
+			device({
+				id: "ready",
+				batteryInfos: [info(44, "Central")],
+			}),
+		]);
+
+		expect(slots).toEqual([
+			{ percent: null, disconnected: true },
+			{ percent: 44, disconnected: false },
+		]);
+	});
+
+	it("preserves null levels and per-device disconnected state", () => {
+		const slots = trayBatterySlotsFromDevices([
+			device({
+				isDisconnected: true,
+				batteryInfos: [info(null, "Central"), info(72, "Peripheral")],
+			}),
+		]);
+
+		expect(slots).toEqual([
+			{ percent: null, disconnected: true },
+			{ percent: 72, disconnected: true },
+		]);
+	});
+
+	it("returns no slots for an empty device list", () => {
+		expect(trayBatterySlotsFromDevices([])).toEqual([]);
+	});
+});
+
 describe("trayBatteryPayloadFromPrimaryDevice", () => {
 	it("disables the tray payload for an empty device list", () => {
 		const payload = trayBatteryPayloadFromPrimaryDevice([]);
 		expect(payload.enabled).toBe(false);
+		expect(payload.slots).toEqual([]);
+		expect(payload.colorLowThreshold).toBe(defaultConfig.trayColorLowThreshold);
+		expect(payload.colorHighThreshold).toBe(defaultConfig.trayColorHighThreshold);
 		expect(payload.rowCount).toBe(1);
 		expect(payload.centralPercent).toBeNull();
 		expect(payload.peripheralPercent).toBeNull();
@@ -122,12 +219,20 @@ describe("syncTrayBatteryIcon", () => {
 	});
 
 	it("forwards the payload with the given components", async () => {
-		await syncTrayBatteryIcon([device({ batteryInfos: [info(85, null)] })], [TrayIconComponent.BatteryPercent]);
+		await syncTrayBatteryIcon(
+			[device({ batteryInfos: [info(85, null)] })],
+			[TrayIconComponent.BatteryPercent],
+			25,
+			60,
+		);
 
 		expect(invoke).toHaveBeenCalledWith("update_tray_battery_icon", {
 			payload: expect.objectContaining({
 				enabled: true,
 				centralPercent: 85,
+				slots: [{ percent: 85, disconnected: false }],
+				colorLowThreshold: 25,
+				colorHighThreshold: 60,
 				components: [TrayIconComponent.BatteryPercent],
 			}),
 		});
@@ -139,6 +244,8 @@ describe("syncTrayBatteryIcon", () => {
 		expect(invoke).toHaveBeenCalledWith("update_tray_battery_icon", {
 			payload: expect.objectContaining({
 				components: [defaultConfig.trayIconComponents[0]],
+				colorLowThreshold: defaultConfig.trayColorLowThreshold,
+				colorHighThreshold: defaultConfig.trayColorHighThreshold,
 			}),
 		});
 	});
