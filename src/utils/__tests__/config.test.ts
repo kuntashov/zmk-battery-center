@@ -129,6 +129,22 @@ describe("config utils", () => {
 		expect(loaded).toEqual(defaultConfig);
 	});
 
+	it("loadSavedConfig adds tray color threshold defaults to older configs", async () => {
+		mockStore.get.mockResolvedValue({
+			theme: "light",
+			lowBatteryThreshold: 10,
+			highBatteryThreshold: 90,
+		});
+
+		const { defaultConfig, loadSavedConfig } = await import("../config");
+		const loaded = await loadSavedConfig();
+
+		expect(loaded.trayColorLowThreshold).toBe(defaultConfig.trayColorLowThreshold);
+		expect(loaded.trayColorHighThreshold).toBe(defaultConfig.trayColorHighThreshold);
+		expect(loaded.lowBatteryThreshold).toBe(10);
+		expect(loaded.highBatteryThreshold).toBe(90);
+	});
+
 	it("setConfig propagates store write errors", async () => {
 		const error = new Error("store write failed");
 		mockStore.set.mockRejectedValue(error);
@@ -219,6 +235,61 @@ describe("config utils", () => {
 
 		expect(loaded.lowBatteryThreshold).toBe(defaultConfig.lowBatteryThreshold);
 		expect(loaded.highBatteryThreshold).toBe(defaultConfig.highBatteryThreshold);
+	});
+
+	it("loadSavedConfig clamps stored tray color thresholds", async () => {
+		mockStore.get.mockResolvedValue({
+			trayColorLowThreshold: 0,
+			trayColorHighThreshold: 250,
+		});
+
+		const { loadSavedConfig } = await import("../config");
+		const loaded = await loadSavedConfig();
+
+		expect(loaded.trayColorLowThreshold).toBe(1);
+		expect(loaded.trayColorHighThreshold).toBe(99);
+	});
+
+	it("loadSavedConfig falls back to both tray color defaults when their ordering is invalid", async () => {
+		mockStore.get.mockResolvedValue({
+			trayColorLowThreshold: 75,
+			trayColorHighThreshold: 20,
+		});
+
+		const { defaultConfig, loadSavedConfig } = await import("../config");
+		const loaded = await loadSavedConfig();
+
+		expect(loaded.trayColorLowThreshold).toBe(defaultConfig.trayColorLowThreshold);
+		expect(loaded.trayColorHighThreshold).toBe(defaultConfig.trayColorHighThreshold);
+	});
+
+	it.each([
+		{ low: 99, high: 99 },
+		{ low: 100, high: 100 },
+	])("loadSavedConfig checks tray color ordering after clamping $low/$high", async ({ low, high }) => {
+		mockStore.get.mockResolvedValue({
+			trayColorLowThreshold: low,
+			trayColorHighThreshold: high,
+		});
+
+		const { defaultConfig, loadSavedConfig } = await import("../config");
+		const loaded = await loadSavedConfig();
+
+		expect(loaded.trayColorLowThreshold).toBe(defaultConfig.trayColorLowThreshold);
+		expect(loaded.trayColorHighThreshold).toBe(defaultConfig.trayColorHighThreshold);
+	});
+
+	it("loadSavedConfig falls back to both tray color defaults when either value is damaged", async () => {
+		mockStore.get.mockResolvedValue({
+			trayColorLowThreshold: Number.NaN,
+			trayColorHighThreshold: 70,
+		});
+
+		const { defaultConfig, loadSavedConfig } = await import("../config");
+		const loaded = await loadSavedConfig();
+
+		expect(loaded.trayColorLowThreshold).toBe(defaultConfig.trayColorLowThreshold);
+		expect(loaded.trayColorHighThreshold).toBe(defaultConfig.trayColorHighThreshold);
 	});
 
 	it("loadSavedConfig deep-merges pushNotificationWhen so missing keys keep defaults", async () => {

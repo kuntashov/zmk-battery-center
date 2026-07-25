@@ -133,7 +133,9 @@ const Settings: React.FC<SettingsScreenProps> = ({
 }) => {
 	const { setTheme, theme } = useTheme();
 	const { config, setConfig } = useConfigContext();
-	const isMac = platform() === "macos";
+	const currentPlatform = platform();
+	const isMac = currentPlatform === "macos";
+	const isWindows = currentPlatform === "windows";
 
 	const handleTrayIconComponentChange = (component: TrayIconComponent, checked: boolean) => {
 		setConfig(c => {
@@ -289,6 +291,41 @@ const Settings: React.FC<SettingsScreenProps> = ({
 										</li>
 									);
 								})}
+							</ul>
+						</SettingsGroup>
+					)}
+
+					{ /* Tray icon color thresholds (Windows only) */ }
+					{isWindows && (
+						<SettingsGroup className="flex w-full flex-col gap-2">
+							<div className="flex justify-between">
+								<span>Tray icon color thresholds</span>
+							</div>
+							<ul className="w-full space-y-0.5 pl-2">
+								<li className="flex items-center gap-1">
+									<Dot /> Red below
+									<BatteryThresholdInput
+										value={config.trayColorLowThreshold}
+										disabled={false}
+										fallback={defaultConfig.trayColorLowThreshold}
+										max={config.trayColorHighThreshold - 1}
+										onCommit={value => setConfig(c => ({ ...c, trayColorLowThreshold: value }))}
+										ariaLabel="Tray icon red threshold"
+									/>
+									%
+								</li>
+								<li className="flex items-center gap-1">
+									<Dot /> Green above
+									<BatteryThresholdInput
+										value={config.trayColorHighThreshold}
+										disabled={false}
+										fallback={defaultConfig.trayColorHighThreshold}
+										min={config.trayColorLowThreshold + 1}
+										onCommit={value => setConfig(c => ({ ...c, trayColorHighThreshold: value }))}
+										ariaLabel="Tray icon green threshold"
+									/>
+									%
+								</li>
 							</ul>
 						</SettingsGroup>
 					)}
