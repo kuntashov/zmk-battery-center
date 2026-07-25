@@ -103,10 +103,11 @@ fn battery_geometries(size: u32, row_count: usize) -> Vec<BatteryGeometry> {
 
     let row_count = row_count.min(MAX_VISIBLE_SLOTS) as u32;
     let margin = (size / 16).max(1);
-    let gap = (size / 16).max(1);
+    let base_gap = (size / 16).max(1);
+    let gap = base_gap + 1;
     let terminal_width = (size / 16).max(1);
     let outline = if size >= 28 { 2 } else { 1 };
-    let available_height = size.saturating_sub(margin * 2 + gap.saturating_mul(row_count - 1));
+    let available_height = size.saturating_sub(margin * 2 + base_gap.saturating_mul(row_count - 1));
     let row_height = (available_height / row_count).min(size / 2).max(3);
     let total_height = row_height * row_count + gap * (row_count - 1);
     let start_y = size.saturating_sub(total_height) / 2;
@@ -319,6 +320,11 @@ mod tests {
             .count() as u32
     }
 
+    fn assert_rect_inside(rect: PixelRect, size: u32) {
+        assert!(rect.x + rect.width <= size);
+        assert!(rect.y + rect.height <= size);
+    }
+
     #[test]
     fn classifies_default_and_custom_threshold_boundaries() {
         for (percent, expected) in [(19, RED), (20, YELLOW), (50, YELLOW), (51, GREEN)] {
@@ -379,6 +385,51 @@ mod tests {
         let geometries = battery_geometries(32, 3);
         for (geometry, expected) in geometries.iter().zip([GREEN, YELLOW, RED]) {
             assert_eq!(pixel(&image, geometry.inner.x, geometry.inner.y), expected);
+        }
+    }
+
+    #[test]
+    fn adds_one_transparent_pixel_between_three_batteries() {
+        for (size, expected_gap, expected_body_height) in [(16, 2, 4), (32, 3, 8)] {
+            let slots = [
+                slot(Some(80), false),
+                slot(Some(80), false),
+                slot(Some(80), false),
+            ];
+            let image = rasterize_battery_slots(&slots, size, 20, 50, FALLBACK_OUTLINE);
+            let geometries = battery_geometries(size, slots.len());
+
+            for rows in geometries.windows(2) {
+                let gap_start = rows[0].body.y + rows[0].body.height;
+                let actual_gap = rows[1].body.y - gap_start;
+                assert_eq!(actual_gap, expected_gap);
+                for y in gap_start..rows[1].body.y {
+                    assert!((0..size).all(|x| pixel(&image, x, y).alpha == 0));
+                }
+            }
+
+            assert!(geometries
+                .iter()
+                .all(|geometry| geometry.body.height == expected_body_height));
+        }
+    }
+
+    #[test]
+    fn keeps_supported_geometries_disjoint_and_inside_the_icon() {
+        for size in MIN_ICON_SIZE..=MAX_ICON_SIZE {
+            for row_count in 1..=MAX_VISIBLE_SLOTS {
+                let geometries = battery_geometries(size, row_count);
+
+                for geometry in &geometries {
+                    assert_rect_inside(geometry.body, size);
+                    assert_rect_inside(geometry.inner, size);
+                    assert_rect_inside(geometry.terminal, size);
+                }
+
+                for rows in geometries.windows(2) {
+                    assert!(rows[0].body.y + rows[0].body.height <= rows[1].body.y);
+                }
+            }
         }
     }
 
