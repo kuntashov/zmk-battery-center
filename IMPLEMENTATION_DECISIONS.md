@@ -119,3 +119,15 @@
 **Consequence:** Before release, manually verify one, two, and three batteries; 19/20/50/51 color boundaries; disconnected and unknown states; 100%, 125%, 150%, and 200% scaling; light and dark taskbars; and restoration of the application icon when no devices are configured.
 
 **Verification:** The manual checklist above is required after the complete Windows tray path is built.
+
+## Publish an unsigned portable Windows test build
+
+**Context:** The fork needs a one-off Windows executable for testers, but it has no trusted Authenticode certificate, hardware-backed key, or external code-signing service configured as a GitHub Actions secret.
+
+**Risk:** Self-signing would still trigger Windows trust warnings, would not establish a trusted publisher identity, and could mislead testers into treating an untrusted certificate as meaningful authentication. Storing an exportable signing key without an established certificate-management process would also create unnecessary secret-management risk.
+
+**Decision:** Do not Authenticode-sign this test executable and reject self-signing. Publish its SHA-256 checksum and GitHub Sigstore-backed build provenance so testers can verify artifact integrity and its relationship to the repository workflow. Describe the executable explicitly as an unsigned test build and warn that Microsoft Defender SmartScreen may appear.
+
+**Consequence:** Windows does not display a trusted publisher for this preview executable. Authenticode signing can be added later only after a trusted PFX and protected signing secrets are available, or after the project adopts a trusted external code-signing service.
+
+**Verification:** The release workflow attests the staged portable executable, generates `SHA256SUMS.txt` for the executable and screenshot, and publishes both verification mechanisms with the prerelease.
