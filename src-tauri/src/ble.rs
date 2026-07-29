@@ -3,6 +3,7 @@ use bluest::{Adapter, Characteristic, Device};
 use futures_util::StreamExt;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::sync::{Arc, LazyLock};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{watch, Mutex};
@@ -14,6 +15,8 @@ const BATTERY_SERVICE_UUID: Uuid = Uuid::from_u128(0x0000180F_0000_1000_8000_008
 const BATTERY_LEVEL_UUID: Uuid = Uuid::from_u128(0x00002A19_0000_1000_8000_00805F9B34FB);
 const BATTERY_INFO_NOTIFICATION_EVENT: &str = "battery-info-notification";
 const BATTERY_MONITOR_STATUS_EVENT: &str = "battery-monitor-status";
+const BATTERY_READ_TIMEOUT: Duration = Duration::from_secs(20);
+static POLLING_BATTERY_READ_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 #[derive(Serialize)]
 pub struct BleDeviceInfo {
@@ -302,6 +305,35 @@ async fn wait_for_retry_or_stop(stop_rx: &mut watch::Receiver<bool>, duration: D
     tokio::select! {
         _ = sleep(duration) => false,
         changed = stop_rx.changed() => changed.is_err() || *stop_rx.borrow(),
+    }
+}
+
+async fn run_battery_read_with_timeout<T, F>(
+    device_id: &str,
+    duration: Duration,
+    read: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: Future<Output = Result<T, String>> + Send + 'static,
+{
+    let mut read_task = tokio::spawn(read);
+
+    match tokio::time::timeout(duration, &mut read_task).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => {
+            let message = format!("Battery read task failed for device {device_id}: {error}");
+            log::warn!("BLE I/O: {message}");
+            Err(message)
+        }
+        Err(_) => {
+            read_task.abort();
+            let seconds = duration.as_secs();
+            let message =
+                format!("Battery read timed out after {seconds} seconds for device {device_id}");
+            log::warn!("BLE I/O: {message}");
+            Err(message)
+        }
     }
 }
 
@@ -755,8 +787,17 @@ pub async fn list_battery_devices() -> Result<Vec<BleDeviceInfo>, String> {
 
 #[tauri::command]
 pub async fn get_battery_info(id: String) -> Result<Vec<BatteryInfo>, String> {
+    let read_id = id.clone();
+    run_battery_read_with_timeout(&id, BATTERY_READ_TIMEOUT, async move {
+        get_battery_info_inner(&read_id).await
+    })
+    .await
+}
+
+async fn get_battery_info_inner(id: &str) -> Result<Vec<BatteryInfo>, String> {
+    let _read_guard = POLLING_BATTERY_READ_LOCK.lock().await;
     let adapter = get_adapter().await?;
-    let target_device = get_target_device(&adapter, &id).await?;
+    let target_device = get_target_device(&adapter, id).await?;
 
     log::debug!("BLE I/O: connect request (polling) device_id={id}");
     adapter
@@ -986,5 +1027,35 @@ mod tests {
         });
         drop(tx);
         assert!(handle.await.unwrap());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn battery_read_timeout_returns_a_diagnostic_error() {
+        let pending_read = std::future::pending::<Result<(), String>>();
+        let result =
+            run_battery_read_with_timeout("stalled-device", Duration::from_secs(20), pending_read)
+                .await;
+
+        assert_eq!(
+            result.unwrap_err(),
+            "Battery read timed out after 20 seconds for device stalled-device"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn battery_read_timeout_survives_a_blocking_future() {
+        let blocking_read = async {
+            std::thread::sleep(Duration::from_millis(200));
+            Ok::<(), String>(())
+        };
+
+        let result = run_battery_read_with_timeout(
+            "blocking-device",
+            Duration::from_millis(20),
+            blocking_read,
+        )
+        .await;
+
+        assert!(result.is_err());
     }
 }

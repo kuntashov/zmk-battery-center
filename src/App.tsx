@@ -55,6 +55,8 @@ enum State {
 }
 
 const DEVICE_FETCH_TIMEOUT_MS = 20_000;
+const MANUAL_BATTERY_REFRESH_TIMEOUT_MS = 25_000;
+const BATTERY_REFRESH_ERROR = "Battery refresh failed. Check the device connection and try again.";
 
 const NOOP = () => {};
 
@@ -259,8 +261,22 @@ function App() {
 			return;
 		}
 		setState(State.fetchingBatteryInfo);
-		await reloadAll();
-		setState(State.main);
+		setError("");
+		try {
+			const didUpdate = await withTimeout(
+				reloadAll(),
+				MANUAL_BATTERY_REFRESH_TIMEOUT_MS,
+				() => new Error("Manual battery refresh timed out"),
+			);
+			if (!didUpdate) {
+				setError(BATTERY_REFRESH_ERROR);
+			}
+		} catch (reloadError) {
+			logger.warn(`Manual battery refresh failed: ${String(reloadError)}`);
+			setError(BATTERY_REFRESH_ERROR);
+		} finally {
+			setState(State.main);
+		}
 	};
 
 	// Handle window size change
@@ -434,7 +450,7 @@ function App() {
 									disabled: !isDeviceLoaded,
 								},
 								{
-									icon: <ArrowPathIcon className="size-5" />,
+									icon: <ArrowPathIcon className={`size-5 ${state === State.fetchingBatteryInfo ? "animate-spin" : ""}`} />,
 									onClick: handleReload,
 									ariaLabel: "Reload",
 									disabled: deviceList.length === 0 || state === State.fetchingBatteryInfo || !isPollingMode,
@@ -477,6 +493,15 @@ function App() {
 								</ul>
 							)}
 						</Modal>
+					)}
+
+					{state === State.main && error && (
+						<div
+							role="alert"
+							className="mx-4 mb-2 rounded-lg bg-destructive/40 px-3 py-2 text-sm text-destructive-foreground"
+						>
+							{error}
+						</div>
 					)}
 
 					{/* Devices content */}
