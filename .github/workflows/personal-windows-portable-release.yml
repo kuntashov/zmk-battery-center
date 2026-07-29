@@ -1,0 +1,164 @@
+name: "Personal Windows Portable Release"
+
+on:
+  push:
+    branches:
+      - "integration/personal-release"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: personal-windows-portable-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref_name == 'integration/personal-release'
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out the integration commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Validate source and calculate release metadata
+        id: metadata
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:GITHUB_REF_NAME -cne "integration/personal-release") {
+            throw "Personal releases must be built from integration/personal-release."
+          }
+
+          $package = Get-Content -LiteralPath "package.json" -Raw | ConvertFrom-Json
+          $version = [string]$package.version
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "package.json contains unsupported version '$version'."
+          }
+
+          $tag = "personal-v$version.$env:GITHUB_RUN_NUMBER"
+          $asset = "zmk-battery-center_${version}_windows_x64_portable.exe"
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "asset=$asset" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Reject an existing immutable release tag
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ steps.metadata.outputs.tag }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $remoteTag = git ls-remote --tags origin "refs/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to query the remote release tags."
+          }
+          if (-not [string]::IsNullOrWhiteSpace(($remoteTag | Out-String))) {
+            throw "Release tag '$env:RELEASE_TAG' already exists and will not be overwritten."
+          }
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3.14"
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch, pinned 2026-07-10
+        with:
+          toolchain: stable
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install cargo-about
+        run: cargo install cargo-about --version 0.9.1 --locked --features cli
+
+      - name: Run lint
+        run: bun run lint
+
+      - name: Build and type-check the UI
+        run: bun run build:ui
+
+      - name: Run frontend tests
+        run: bun run test:frontend
+
+      - name: Run Rust tests
+        run: bun run test:rust
+
+      - name: Generate bundled licenses
+        run: bun scripts/generate_licenses.ts --skip-verify
+
+      - name: Build the portable Windows executable
+        run: bun run build:app
+
+      - name: Stage the portable executable
+        id: asset
+        shell: pwsh
+        env:
+          ASSET_NAME: ${{ steps.metadata.outputs.asset }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $builtExe = Join-Path $env:GITHUB_WORKSPACE "src-tauri/target/release/zmk-battery-center.exe"
+          if (-not (Test-Path -LiteralPath $builtExe -PathType Leaf)) {
+            throw "Portable executable was not produced at '$builtExe'."
+          }
+
+          $staging = Join-Path $env:RUNNER_TEMP "personal-windows-portable-release"
+          New-Item -ItemType Directory -Path $staging -Force | Out-Null
+          $assetPath = Join-Path $staging $env:ASSET_NAME
+          Copy-Item -LiteralPath $builtExe -Destination $assetPath
+
+          $sha256 = (Get-FileHash -LiteralPath $assetPath -Algorithm SHA256).Hash
+          "path=$assetPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "sha256=$sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Render release notes
+        id: notes
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ steps.metadata.outputs.tag }}
+          ASSET_NAME: ${{ steps.metadata.outputs.asset }}
+          SHA256: ${{ steps.asset.outputs.sha256 }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $notesPath = Join-Path $env:RUNNER_TEMP "personal-release-notes.md"
+          $commitUrl = "https://github.com/$env:GITHUB_REPOSITORY/commit/$env:GITHUB_SHA"
+          $notes = @(
+            'Portable Windows build from `integration/personal-release`.'
+            ''
+            "- Commit: [$env:GITHUB_SHA]($commitUrl)"
+            "- Asset: ``$env:ASSET_NAME``"
+            "- SHA-256: ``$env:SHA256``"
+            ''
+            'This is an unsigned personal build. Windows may display a Microsoft Defender SmartScreen warning.'
+          )
+          [System.IO.File]::WriteAllLines(
+            $notesPath,
+            $notes,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          "path=$notesPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Publish personal prerelease
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.metadata.outputs.tag }}
+          ASSET_PATH: ${{ steps.asset.outputs.path }}
+          NOTES_PATH: ${{ steps.notes.outputs.path }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          gh release create $env:RELEASE_TAG `
+            $env:ASSET_PATH `
+            --repo $env:GH_REPO `
+            --target $env:GITHUB_SHA `
+            --title "ZMK Battery Center $env:RELEASE_TAG" `
+            --notes-file $env:NOTES_PATH `
+            --prerelease
