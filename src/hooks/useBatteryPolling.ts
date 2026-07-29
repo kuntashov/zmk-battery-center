@@ -1,7 +1,7 @@
 import { useEffect, useCallback, useRef } from "react";
 import { getBatteryInfo } from "@/utils/ble";
 import { logger } from "@/utils/log";
-import { fireAndForget, sleep } from "@/utils/common";
+import { fireAndForget, sleep, withTimeout } from "@/utils/common";
 import { recordBatteryReadings } from "@/utils/batteryHistory";
 import { sendNotification } from "@/utils/notification";
 import { NotificationType } from "@/utils/config";
@@ -27,6 +27,8 @@ interface UseBatteryPollingOptions {
 	autoCollapseDisconnectedDevices: boolean;
 }
 
+const BATTERY_INVOKE_TIMEOUT_MS = 22_000;
+
 export function useBatteryPolling({
 	isPollingMode,
 	isConfigLoaded,
@@ -45,9 +47,11 @@ export function useBatteryPolling({
 	const lowBatteryThresholdRef = useRef(lowBatteryThreshold);
 	const highBatteryThresholdRef = useRef(highBatteryThreshold);
 	const autoCollapseDisconnectedDevicesRef = useRef(autoCollapseDisconnectedDevices);
-	// Shared by the interval cycle and the manual reload: concurrent
-	// get_battery_info calls for one device can tear each other down.
-	const isCycleInFlightRef = useRef(false);
+	// All polling reads share one Bluetooth adapter. Keep a per-device map for
+	// deduplication and a global queue so connect/read/disconnect sessions never
+	// overlap across devices.
+	const activeDeviceUpdatesRef = useRef<Map<string, Promise<boolean>>>(new Map());
+	const batteryUpdateQueueRef = useRef<Promise<void>>(Promise.resolve());
 	useEffect(() => {
 		pushNotificationRef.current = pushNotification;
 		pushNotificationWhenRef.current = pushNotificationWhen;
@@ -56,7 +60,7 @@ export function useBatteryPolling({
 		autoCollapseDisconnectedDevicesRef.current = autoCollapseDisconnectedDevices;
 	}, [pushNotification, pushNotificationWhen, lowBatteryThreshold, highBatteryThreshold, autoCollapseDisconnectedDevices]);
 
-	const updateBatteryInfo = useCallback(async (device: RegisteredDevice) => {
+	const updateBatteryInfo = useCallback(async (device: RegisteredDevice): Promise<boolean> => {
 		const isDisconnectedPrev = device.isDisconnected;
 
 		let attempts = 0;
@@ -65,7 +69,11 @@ export function useBatteryPolling({
 		while (attempts < maxAttempts) {
 			logger.info(`Updating battery info for: ${device.id} (attempt ${attempts + 1} of ${maxAttempts})`);
 			try {
-				const info = await getBatteryInfo(device.id);
+				const info = await withTimeout(
+					getBatteryInfo(device.id),
+					BATTERY_INVOKE_TIMEOUT_MS,
+					() => new Error(`Battery read timed out for device ${device.id}`),
+				);
 				const infoArray = Array.isArray(info) ? info : [info];
 				commitRegisteredDevices(prev => prev.map(d => {
 					if (d.id !== device.id) return d;
@@ -92,9 +100,15 @@ export function useBatteryPolling({
 					pushNotificationWhen: pushNotificationWhenRef.current,
 				});
 
-				return;
-			} catch {
-				attempts++;
+				return true;
+			} catch (error) {
+				const attemptNumber = attempts + 1;
+				const isTimeout = String(error).includes("Battery read timed out");
+				attempts = isTimeout ? maxAttempts : attemptNumber;
+				logger.warn(
+					`Failed to update battery info for ${device.id} `
+					+ `(attempt ${attemptNumber} of ${maxAttempts}): ${String(error)}`,
+				);
 				if (attempts >= maxAttempts) {
 					commitRegisteredDevices(prev => prev.map(d => {
 						if (d.id !== device.id) {
@@ -111,13 +125,46 @@ export function useBatteryPolling({
 							sendNotification(`${getRegisteredDeviceDisplayName(device)} has been disconnected.`),
 							`Failed to send disconnected notification for ${device.id}`,
 						);
-						return;
 					}
+					return false;
 				}
+				await sleep(500);
 			}
-			await sleep(500);
 		}
+		return false;
 	}, [commitRegisteredDevices]);
+
+	const runDeviceUpdate = useCallback((device: RegisteredDevice): Promise<boolean> => {
+		const activeUpdates = activeDeviceUpdatesRef.current;
+		const activeUpdate = activeUpdates.get(device.id);
+		if (activeUpdate) {
+			return activeUpdate;
+		}
+
+		let update: Promise<boolean>;
+		const queuedUpdate = batteryUpdateQueueRef.current.then(
+			() => updateBatteryInfo(device),
+		);
+		batteryUpdateQueueRef.current = queuedUpdate.then(
+			() => undefined,
+			() => undefined,
+		);
+		update = queuedUpdate
+			.finally(() => {
+				if (activeUpdates.get(device.id) === update) {
+					activeUpdates.delete(device.id);
+				}
+			});
+		activeUpdates.set(device.id, update);
+		return update;
+	}, [updateBatteryInfo]);
+
+	const runBatteryCycle = useCallback(async (): Promise<boolean> => {
+		const results = await Promise.all(
+			registeredDevicesRef.current.map(runDeviceUpdate),
+		);
+		return results.every(Boolean);
+	}, [registeredDevicesRef, runDeviceUpdate]);
 
 	// Polling: use registeredDevicesRef so this effect doesn't re-run on every
 	// device update (which would cause an infinite loop).
@@ -129,11 +176,9 @@ export function useBatteryPolling({
 		let isUnmounted = false;
 
 		const runPollCycle = () => {
-			if (isUnmounted || isCycleInFlightRef.current) return;
-			isCycleInFlightRef.current = true;
+			if (isUnmounted) return;
 			fireAndForget(
-				Promise.all(registeredDevicesRef.current.map(updateBatteryInfo))
-					.finally(() => { isCycleInFlightRef.current = false; }),
+				runBatteryCycle(),
 				"Polling cycle failed",
 			);
 		};
@@ -146,20 +191,30 @@ export function useBatteryPolling({
 			isUnmounted = true;
 			clearInterval(interval);
 		};
-	}, [isPollingMode, isConfigLoaded, isDeviceLoaded, fetchInterval, updateBatteryInfo, registeredDevicesRef]);
+	}, [isPollingMode, isConfigLoaded, isDeviceLoaded, fetchInterval, runBatteryCycle]);
 
 	const reloadAll = useCallback(async () => {
-		if (isCycleInFlightRef.current) {
-			return false; // a cycle is already refreshing every device
-		}
-		isCycleInFlightRef.current = true;
-		try {
-			await Promise.all(registeredDevicesRef.current.map(updateBatteryInfo));
-		} finally {
-			isCycleInFlightRef.current = false;
-		}
-		return true;
-	}, [registeredDevicesRef, updateBatteryInfo]);
+		const results = await Promise.all(
+			registeredDevicesRef.current.map(async (device) => {
+				const activeUpdate = activeDeviceUpdatesRef.current.get(device.id);
+				if (activeUpdate) {
+					const didUpdate = await activeUpdate;
+					if (didUpdate) {
+						return true;
+					}
+				}
+
+				const latestDevice = registeredDevicesRef.current.find(
+					current => current.id === device.id,
+				);
+				if (!latestDevice) {
+					return false;
+				}
+				return await runDeviceUpdate(latestDevice);
+			}),
+		);
+		return results.every(Boolean);
+	}, [registeredDevicesRef, runDeviceUpdate]);
 
 	return { updateBatteryInfo, reloadAll, autoCollapseDisconnectedDevicesRef };
 }

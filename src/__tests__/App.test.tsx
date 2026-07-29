@@ -858,14 +858,148 @@ describe("App", () => {
 			expect(getBatteryInfo).toHaveBeenCalledTimes(2);
 		});
 
-		it("ignores a manual reload while a poll cycle is in flight", async () => {
+		it("queues other devices behind an in-flight BLE read", async () => {
 			const fetchInterval = 5_000;
 			mockedConfig = { ...defaultConfig, fetchInterval };
 
-			let resolvePoll!: (value: { battery_level: number; user_description: string }[]) => void;
-			vi.mocked(getBatteryInfo).mockImplementation(
-				() => new Promise((resolve) => { resolvePoll = resolve; }),
-			);
+			let resolveStalledPoll!: (
+				value: { battery_level: number; user_description: string }[],
+			) => void;
+			vi.mocked(getBatteryInfo).mockImplementation((id: string) => {
+				if (id === "stalled-device") {
+					return new Promise((resolve) => { resolveStalledPoll = resolve; });
+				}
+				return Promise.resolve([{ battery_level: 72, user_description: "Central" }]);
+			});
+
+			await act(async () => {
+				render(<App />);
+			});
+
+			await act(async () => {
+				resolveDeviceStoreGets([
+					{
+						id: "stalled-device",
+						name: "Stalled Device",
+						isDisconnected: false,
+						isCollapsed: false,
+						batteryInfos: [{ battery_level: 100, user_description: "Central" }],
+					},
+					{
+						id: "responsive-device",
+						name: "Responsive Device",
+						isDisconnected: false,
+						isCollapsed: false,
+						batteryInfos: [{ battery_level: 73, user_description: "Central" }],
+					},
+				]);
+			});
+
+			expect(
+				vi.mocked(getBatteryInfo).mock.calls.filter(([id]) => id === "stalled-device"),
+			).toHaveLength(1);
+			expect(
+				vi.mocked(getBatteryInfo).mock.calls.filter(([id]) => id === "responsive-device"),
+			).toHaveLength(0);
+
+			await act(async () => {
+				vi.advanceTimersByTime(fetchInterval);
+			});
+
+			expect(
+				vi.mocked(getBatteryInfo).mock.calls.filter(([id]) => id === "stalled-device"),
+			).toHaveLength(1);
+			expect(
+				vi.mocked(getBatteryInfo).mock.calls.filter(([id]) => id === "responsive-device"),
+			).toHaveLength(0);
+
+			await act(async () => {
+				resolveStalledPoll([{ battery_level: 99, user_description: "Central" }]);
+				await Promise.resolve();
+			});
+
+			expect(
+				vi.mocked(getBatteryInfo).mock.calls.filter(([id]) => id === "responsive-device"),
+			).toHaveLength(1);
+			expect(screen.getByText("72%")).toBeTruthy();
+		});
+
+		it("does not disconnect a device when startup BLE reads share one adapter", async () => {
+			const fetchInterval = 60_000;
+			mockedConfig = { ...defaultConfig, fetchInterval };
+
+			let activeReads = 0;
+			let maxActiveReads = 0;
+			let resolveTrackball!: (
+				value: { battery_level: number; user_description: string }[],
+			) => void;
+			vi.mocked(getBatteryInfo).mockImplementation((id: string) => {
+				if (activeReads > 0) {
+					return Promise.reject(new Error("Bluetooth adapter is busy"));
+				}
+
+				activeReads += 1;
+				maxActiveReads = Math.max(maxActiveReads, activeReads);
+				if (id === "trackball") {
+					return new Promise((resolve) => {
+						resolveTrackball = (value) => {
+							activeReads -= 1;
+							resolve(value);
+						};
+					});
+				}
+
+				activeReads -= 1;
+				return Promise.resolve([{ battery_level: 70, user_description: "Left" }]);
+			});
+
+			await act(async () => {
+				render(<App />);
+			});
+
+			await act(async () => {
+				resolveDeviceStoreGets([
+					{
+						id: "trackball",
+						name: "EH TB Mini v3",
+						isDisconnected: false,
+						isCollapsed: false,
+						batteryInfos: [{ battery_level: 89, user_description: "Trackball" }],
+					},
+					{
+						id: "splits",
+						name: "EH_OP36",
+						isDisconnected: false,
+						isCollapsed: false,
+						batteryInfos: [{ battery_level: 69, user_description: "Left" }],
+					},
+				]);
+			});
+
+			await act(async () => {
+				vi.advanceTimersByTime(1_000);
+			});
+
+			await act(async () => {
+				resolveTrackball([{ battery_level: 88, user_description: "Trackball" }]);
+				await Promise.resolve();
+			});
+
+			expect(maxActiveReads).toBe(1);
+			expect(screen.queryByLabelText("Disconnected")).toBeNull();
+			expect(screen.getByText("70%")).toBeTruthy();
+		});
+
+		it("keeps manual reload visible and retries after the active poll fails", async () => {
+			const fetchInterval = 5_000;
+			mockedConfig = { ...defaultConfig, fetchInterval };
+
+			let rejectPoll!: (reason: Error) => void;
+			vi.mocked(getBatteryInfo)
+				.mockImplementationOnce(
+					() => new Promise((_, reject) => { rejectPoll = reject; }),
+				)
+				.mockResolvedValue([{ battery_level: 94, user_description: "Central" }]);
 
 			await act(async () => {
 				render(<App />);
@@ -878,27 +1012,37 @@ describe("App", () => {
 						name: "MockBoard One",
 						isDisconnected: false,
 						isCollapsed: false,
-						batteryInfos: [{ battery_level: 87, user_description: "Central" }],
+						batteryInfos: [{ battery_level: 100, user_description: "Central" }],
 					},
 				]);
 			});
 
 			// Initial poll cycle is in flight
 			expect(getBatteryInfo).toHaveBeenCalledTimes(1);
+			expect(screen.getByText("100%")).toBeTruthy();
 
 			await act(async () => {
 				fireEvent.click(screen.getByRole("button", { name: "Reload" }));
 			});
 
-			// The click must not issue fresh fetches while the cycle holds the guard
+			// The click joins the active request instead of disappearing without
+			// feedback or launching an unsafe concurrent BLE request.
 			expect(getBatteryInfo).toHaveBeenCalledTimes(1);
+			expect(screen.getByText("Fetching battery info...")).toBeTruthy();
 
 			await act(async () => {
-				resolvePoll([{ battery_level: 90, user_description: "Central" }]);
+				rejectPoll(new Error("Battery read timed out"));
+				await Promise.resolve();
+				vi.advanceTimersByTime(500);
 			});
 
-			// UI is back on the main screen with the reload button available
-			expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
+			await act(async () => {
+				await Promise.resolve();
+			});
+
+			expect(getBatteryInfo).toHaveBeenCalledTimes(2);
+			expect(screen.getByText("94%")).toBeTruthy();
+			expect(screen.queryByText("Fetching battery info...")).toBeNull();
 		});
 
 		it("skips a poll cycle while a manual reload is in flight", async () => {
@@ -951,6 +1095,110 @@ describe("App", () => {
 				vi.advanceTimersByTime(fetchInterval);
 			});
 			expect(getBatteryInfo).toHaveBeenCalledTimes(3);
+		});
+
+		it("reports a manual refresh failure without retrying a timed out read", async () => {
+			const fetchInterval = 5_000;
+			mockedConfig = { ...defaultConfig, fetchInterval };
+			vi.mocked(getBatteryInfo)
+				.mockResolvedValueOnce([{ battery_level: 94, user_description: "Central" }])
+				.mockRejectedValue(
+					new Error("Battery read timed out after 20 seconds for device kbd-1"),
+				);
+
+			await act(async () => {
+				render(<App />);
+			});
+
+			await act(async () => {
+				resolveDeviceStoreGets([
+					{
+						id: "kbd-1",
+						name: "MockBoard One",
+						isDisconnected: false,
+						isCollapsed: false,
+						batteryInfos: [{ battery_level: 100, user_description: "Central" }],
+					},
+				]);
+				await Promise.resolve();
+			});
+
+			expect(getBatteryInfo).toHaveBeenCalledTimes(1);
+			expect(screen.getByText("94%")).toBeTruthy();
+
+			await act(async () => {
+				fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+				await Promise.resolve();
+			});
+
+			expect(getBatteryInfo).toHaveBeenCalledTimes(2);
+			expect(screen.getByRole("alert").textContent).toContain(
+				"Battery refresh failed. Check the device connection and try again.",
+			);
+
+			await act(async () => {
+				vi.advanceTimersByTime(1_000);
+			});
+			expect(getBatteryInfo).toHaveBeenCalledTimes(2);
+		});
+
+		it("leaves the loading screen when the BLE invoke never settles", async () => {
+			const fetchInterval = 60_000;
+			mockedConfig = { ...defaultConfig, fetchInterval };
+			vi.mocked(getBatteryInfo)
+				.mockResolvedValueOnce([{ battery_level: 94, user_description: "Central" }])
+				.mockImplementationOnce(() => new Promise(() => {}))
+				.mockResolvedValue([{ battery_level: 92, user_description: "Central" }]);
+
+			await act(async () => {
+				render(<App />);
+			});
+
+			await act(async () => {
+				resolveDeviceStoreGets([
+					{
+						id: "kbd-1",
+						name: "MockBoard One",
+						isDisconnected: false,
+						isCollapsed: false,
+						batteryInfos: [{ battery_level: 100, user_description: "Central" }],
+					},
+				]);
+				await Promise.resolve();
+			});
+
+			act(() => {
+				fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+			});
+			expect(screen.getByText("Fetching battery info...")).toBeTruthy();
+			await act(async () => {
+				await Promise.resolve();
+			});
+			expect(getBatteryInfo).toHaveBeenCalledTimes(2);
+
+			act(() => {
+				vi.advanceTimersByTime(22_000);
+			});
+			await act(async () => {
+				for (let index = 0; index < 10; index += 1) {
+					await Promise.resolve();
+				}
+			});
+
+			expect(screen.queryByText("Fetching battery info...")).toBeNull();
+			expect(screen.getByRole("alert").textContent).toContain(
+				"Battery refresh failed. Check the device connection and try again.",
+			);
+
+			await act(async () => {
+				fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+				for (let index = 0; index < 3; index += 1) {
+					await Promise.resolve();
+				}
+			});
+
+			expect(getBatteryInfo).toHaveBeenCalledTimes(3);
+			expect(screen.getByText("92%")).toBeTruthy();
 		});
 
 		it("does not cause unhandled rejection when getBatteryInfo and sendNotification both reject", async () => {
